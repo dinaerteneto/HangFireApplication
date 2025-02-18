@@ -2,6 +2,7 @@
 using System.Diagnostics;
 using HangFireApplication.Repositories;
 using HangFireApplication.DTOs;
+using Hangfire.Storage;
 
 namespace HangFireApplication.Services
 {
@@ -36,41 +37,29 @@ namespace HangFireApplication.Services
             return taskScheduler;
         }
 
-        [AutomaticRetry(Attempts = 3)]
-        public void ExecuteScheduledTask(Guid taskId)
+        [AutomaticRetry(Attempts = 0)]
+        public async Task ExecuteScheduledTask(Guid taskId)
         {
-            var task = _taskSchedulerRepository.GetTaskById(taskId);
-            if (task == null || !task.Enable || string.IsNullOrWhiteSpace(task.ExecutablePath))
-                return;
-
             try
             {
-                var process = new Process
-                {
-                    StartInfo = new ProcessStartInfo
-                    {
-                        FileName = task.ExecutablePath,
-                        Arguments = task.Arguments,
-                        RedirectStandardOutput = true,
-                        RedirectStandardError = true,
-                        UseShellExecute = false,
-                        CreateNoWindow = true
-                    }
-                };
+                var task = _taskSchedulerRepository.GetTaskById(taskId);
 
-                process.Start();
-                string output = process.StandardOutput.ReadToEnd();
-                string error = process.StandardError.ReadToEnd();
-                process.WaitForExit();
+                var result = RunExecutable(task.ExecutablePath, task.Arguments);
 
-                Console.WriteLine($"[Hangfire] Executado: {task.Name}");
-                if (!string.IsNullOrEmpty(output)) Console.WriteLine($"[Saída] {output}");
-                if (!string.IsNullOrEmpty(error)) Console.WriteLine($"[Erro] {error}");
+                // Lógica adicional para sucesso
+                Console.WriteLine($"Task {task.Name} executed successfully.");
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[Erro] {task.Name}: {ex.Message}");
-                throw;
+                // Log de erro
+                Console.Error.WriteLine($"Error executing task {taskId}: {ex.Message}");
+
+                // Aqui o Hangfire já marcará a tarefa como falha se uma exceção for lançada,
+                // mas podemos fazer uma customização aqui, se necessário.
+
+                // Por exemplo, podemos usar uma funcionalidade do Hangfire para registrar a falha
+                // manualmente, ou apenas deixar o Hangfire tratar automaticamente.
+                throw; // Lança novamente para Hangfire registrar o erro corretamente
             }
         }
 
@@ -80,6 +69,7 @@ namespace HangFireApplication.Services
 
             foreach (var task in tasks)
             {
+                Console.WriteLine($"Scheduling task: {task.Id}");
                 if (task.Enable && !string.IsNullOrEmpty(task.CronExpression))
                 {
                     _recurringJobManager.AddOrUpdate(
@@ -87,6 +77,37 @@ namespace HangFireApplication.Services
                         () => ExecuteScheduledTask(task.Id),
                         task.CronExpression
                     );
+                }
+            }
+        }
+
+        private string RunExecutable(string executablePath, string arguments)
+        {
+            // Executar o .exe com argumentos
+            var processStartInfo = new ProcessStartInfo
+            {
+                FileName = executablePath,
+                Arguments = arguments,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = false
+            };
+
+            using (var process = Process.Start(processStartInfo))
+            {
+                using (var reader = process.StandardError)
+                {
+                    string error = reader.ReadToEnd();
+                    if (!string.IsNullOrEmpty(error))
+                    {
+                        throw new Exception($"Executable failed with error: {error}");
+                    }
+                }
+
+                using (var reader = process.StandardOutput)
+                {
+                    return reader.ReadToEnd();
                 }
             }
         }
